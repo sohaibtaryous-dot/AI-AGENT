@@ -250,3 +250,7 @@ Structure : `assistant_page.py` (interface chat) · `agents/` (extractor, excel_
   contenu du PDF (titre, sections, tableaux). Erreur → le modèle corrige (3 essais max) ; le bouton de téléchargement n'apparaît qu'après validation.
 - **Clé API** (jamais dans GitHub) : saisie dans la barre latérale, ou `ANTHROPIC_API_KEY` dans les **Secrets Streamlit** (`.streamlit/secrets.toml`
   / Settings → Secrets), ou dans un fichier **`.env`** local (modèle : `.env.example`, déjà dans `.gitignore`).
+
+**Moteur local (sans clé API)** : sans clé, l'ASSISTANT utilise `agents/local_engine.py` — il comprend les demandes courantes (FR / EN / darija en lettres latines :
+total, TVA x %, écart, tri, synthèse par colonne, supprimer / renommer une colonne, couleur d'en-tête, rapport PDF) sur les données déposées (Excel, CSV,
+ou PDF de BL / factures lus par le moteur du site). Il ne peut pas inventer de contenu. Avec une clé API, un interrupteur permet de passer à Claude.

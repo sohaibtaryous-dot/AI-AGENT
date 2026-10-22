@@ -52,8 +52,10 @@ def _render_deliverable(d: orchestrator.Deliverable, i: int):
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if d.kind == "excel" else "application/pdf",
                                use_container_width=True)
         else:
-            st.error("Le fichier n'a pas passé le contrôle qualité après plusieurs essais : il n'est pas proposé au téléchargement.",
-                     icon=":material/gpp_bad:")
+            if d.data:
+                st.error("Le fichier n'a pas passé le contrôle qualité : il n'est pas proposé au téléchargement.", icon=":material/gpp_bad:")
+            else:
+                st.warning("Fichier non généré.", icon=":material/info:")
             for e in d.errors[:8]:
                 st.markdown(f"- {e}")
             st.caption("Reformulez votre demande ou précisez les données, puis réessayez.")
@@ -67,10 +69,14 @@ def render(ai_cfg):
                badge="TIMAR TANGER · ASSISTANT", title="Assistant fichiers", highlight="Excel & PDF",
                desc="Décrivez le fichier voulu (ou déposez vos données) : les agents extraient, génèrent, puis un contrôle qualité "
                     "corrige automatiquement avant le téléchargement.", ai_label="")
-    llm = L.LLM(ai_cfg)
-    if not llm.available:
-        st.warning("Clé API Anthropic requise : saisissez-la dans la barre latérale (« Clé API Anthropic ») ou définissez "
-                   "ANTHROPIC_API_KEY (Secrets Streamlit / fichier .env).")
+    has_key = L.LLM(ai_cfg).available
+    use_claude = has_key and st.toggle("Utiliser Claude (clé API détectée) — sinon moteur local", value=True, key="asst_use_claude",
+                                       help="Claude comprend n'importe quelle demande ; le moteur local (sans clé) couvre les demandes courantes sur vos données déposées.")
+    llm = L.LLM(ai_cfg) if use_claude else None
+    if not use_claude:
+        st.info("**Moteur local (sans clé API)** : déposez vos données (Excel, CSV, ou PDF de BL / factures) puis demandez, par exemple : "
+                "« tableau Excel avec total et TVA 20 % », « trié par Montant, récapitulatif par Client, en-tête vert », "
+                "« rapport PDF », puis « ajoute une colonne écart », « supprime la colonne Date », « renomme X en Y ».", icon=":material/smart_toy:")
     st.session_state.setdefault(K_MSGS, [])
     st.session_state.setdefault(K_DELIV, [])
     st.session_state.setdefault(K_SPECS, {})
@@ -87,7 +93,7 @@ def render(ai_cfg):
             for m in st.session_state[K_MSGS]:
                 with st.chat_message(m["role"]):
                     st.markdown(m["content"])
-        prompt = st.chat_input("Décrivez le fichier à créer ou la modification à faire…", disabled=not llm.available)
+        prompt = st.chat_input("Décrivez le fichier à créer ou la modification à faire…")
         if st.session_state[K_MSGS] and st.button("Nouvelle conversation", icon=":material/restart_alt:", key="asst_reset"):
             for k in (K_MSGS, K_DELIV, K_SPECS):
                 st.session_state.pop(k, None)
@@ -95,6 +101,11 @@ def render(ai_cfg):
     if prompt:
         st.session_state[K_MSGS].append({"role": "user", "content": prompt})
         uploads = [(f.name, f.getvalue()) for f in (up or [])]
+        sig = tuple((n, len(d)) for n, d in uploads)
+        same_files = bool(st.session_state[K_SPECS]) and sig == st.session_state.get("asst_up_sig")
+        st.session_state["asst_up_sig"] = sig
+        if same_files and llm is None:                         # mêmes fichiers qu'avant : le moteur local MODIFIE le fichier précédent
+            uploads = []
         status = left.empty()
         try:
             res = orchestrator.run(prompt, uploads, llm, previous=st.session_state[K_SPECS], history=_history(st.session_state[K_MSGS][:-1]),
@@ -106,8 +117,9 @@ def render(ai_cfg):
                     st.session_state[K_SPECS][d.kind] = d.spec
             ok = [d for d in res.deliverables if d.validated]
             msg = (f"Fichier(s) prêt(s) : {', '.join(d.filename for d in ok)}." if ok else "Je n'ai pas réussi à produire un fichier valide.")
-            if len(ok) < len(res.deliverables):
-                msg += " Un fichier n'a pas passé le contrôle qualité (détails à droite)."
+            for d in res.deliverables:
+                if not d.validated and d.errors:
+                    msg += f"\n\n**{d.filename}** : {d.errors[0]}"
             if res.notes:
                 msg += "\n\n" + "\n".join(f"⚠ {n}" for n in res.notes)
             st.session_state[K_MSGS].append({"role": "assistant", "content": msg})

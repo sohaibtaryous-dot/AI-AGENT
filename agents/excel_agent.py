@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import re
+from datetime import datetime
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -33,6 +34,7 @@ SCHEMA = {
                 "rows": {"type": "array", "items": {"type": "array", "items": {"type": ["string", "number", "null"]}},
                          "description": "Données ligne par ligne. Formule = chaîne commençant par « = » (syntaxe anglaise, séparateur virgule)."},
                 "freeze_header": {"type": "boolean"}, "autofilter": {"type": "boolean"},
+                "header_color": {"type": "string", "description": "Couleur hex de l'en-tête, ex. 2E7D32"},
             },
             "required": ["name", "columns", "rows"]}},
         "notes": {"type": "string"},
@@ -90,12 +92,14 @@ def build_xlsx(spec: dict) -> bytes:
     wb = Workbook()
     wb.remove(wb.active)
     used: set = set()
-    head_fill = PatternFill("solid", start_color="1F3864", end_color="1F3864")
+    default_head = "1F3864"
     band = PatternFill("solid", start_color="EEF3FB", end_color="EEF3FB")
     thin = Side(style="thin", color="B7C2D6")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     for sh in spec["sheets"]:
         ws = wb.create_sheet(_clean_sheet_name(sh.get("name"), used))
+        hc = re.sub(r"[^0-9A-Fa-f]", "", str(sh.get("header_color") or ""))[:6]
+        head_fill = PatternFill("solid", start_color=hc if len(hc) == 6 else default_head, end_color=hc if len(hc) == 6 else default_head)
         cols = sh["columns"]
         fmts = [FORMATS.get(c.get("format") or "general", "General") for c in cols]
         for j, c in enumerate(cols, 1):
@@ -107,6 +111,8 @@ def build_xlsx(spec: dict) -> bytes:
             is_total = bool(row) and isinstance(row[0], str) and row[0].strip().upper().startswith("TOTAL")
             for j in range(1, len(cols) + 1):
                 v = _fx(row[j - 1] if j - 1 < len(row) else None)
+                if fmts[j - 1] == FORMATS["date"] and isinstance(v, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+                    v = datetime.strptime(v, "%Y-%m-%d").date()
                 cell = ws.cell(row=i, column=j, value=v)
                 cell.font = Font(name="Arial", size=10, bold=is_total)
                 cell.border = border
