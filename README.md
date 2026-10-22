@@ -241,3 +241,12 @@ TIMAR_ADMIN_EMAIL_2 = "admin2@exemple.com"
 TIMAR_ADMIN_PASSWORD_2 = "motdepasse2"
 ```
 Un admin retiré des Secrets perd son compte Admin au redémarrage suivant.
+
+## Module ASSISTANT (chat → fichiers Excel / PDF)
+Structure : `assistant_page.py` (interface chat) · `agents/` (extractor, excel_agent, pdf_agent, qa_agent, orchestrator) ·
+`utils/` (config, llm, files) · `templates/pdf/theme.json` (couleurs / police du PDF).
+- Les agents renvoient un **JSON** (aucun code généré n'est exécuté) ; Excel = openpyxl (styles, formules), PDF = ReportLab (pur Python, aucune lib système).
+- **QA automatique** : formules (syntaxe, fonctions, feuilles, plages, + recalcul LibreOffice si installé → aucun #REF!/#VALUE!/#DIV/0!),
+  contenu du PDF (titre, sections, tableaux). Erreur → le modèle corrige (3 essais max) ; le bouton de téléchargement n'apparaît qu'après validation.
+- **Clé API** (jamais dans GitHub) : saisie dans la barre latérale, ou `ANTHROPIC_API_KEY` dans les **Secrets Streamlit** (`.streamlit/secrets.toml`
+  / Settings → Secrets), ou dans un fichier **`.env`** local (modèle : `.env.example`, déjà dans `.gitignore`).

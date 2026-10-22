@@ -1,0 +1,11 @@
+{
+  "font": "Helvetica",
+  "primary": "#1F3864",
+  "accent": "#3B82F6",
+  "text": "#1B2333",
+  "muted": "#6B7280",
+  "table_header_bg": "#1F3864",
+  "table_header_fg": "#FFFFFF",
+  "table_band": "#EEF3FB",
+  "margin_mm": 18
+}

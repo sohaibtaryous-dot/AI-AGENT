@@ -8,6 +8,8 @@ PyPDF2>=3.0           # extraction de secours
 pytesseract>=0.3.10   # OCR via Tesseract (binaire portable possible, voir README)
 Pillow>=10.0
 numpy>=1.24
+python-docx>=1.1       # lecture des fichiers Word (module ASSISTANT)
+reportlab>=4.0       # génération PDF (module ASSISTANT) — pur Python
 anthropic>=1.15     # lecture IA multilingue (Claude) — clé API Anthropic requise
 
 # Anciens classeurs Excel .xls (facultatif) :

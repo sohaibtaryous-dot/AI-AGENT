@@ -3277,14 +3277,18 @@ def main():
         st.selectbox("🎨 Thème", list(ui.THEMES), key="theme", help="Change les couleurs de l'application.")
         ui.sidebar_cap("Module", "layers")
         modules = [":material/move_to_inbox: IMPORT — Ventilation groupage", ":material/outbox: EXPORT — BL & Factures"]
+        modules += [":material/smart_toy: ASSISTANT — Fichiers Excel & PDF"]
         modules += [":material/admin_panel_settings: ADMIN — Gestion des Accès & Dispatch"] if is_admin else \
                    [":material/folder_open: MES FICHIERS — Dossiers reçus"]
         module = st.radio("Module", modules, key="module")
         is_admin_panel = "ADMIN" in module
         is_files = "MES FICHIERS" in module
         is_export = "EXPORT" in module
+        is_assistant = "ASSISTANT" in module
         ai_cfg, ocr, basis = None, None, "Valeur HT"
-        if not (is_admin_panel or is_files):
+        if is_assistant:
+            ai_cfg = sidebar_ai()
+        if not (is_admin_panel or is_files or is_assistant):
             ai_cfg = sidebar_ai()
             if not is_export:
                 ui.sidebar_cap("Ventilation des poids", "scale")
@@ -3322,6 +3326,15 @@ def main():
     if is_files:
         views.render_user_space(user)
         ui.footer()
+        return
+
+    if is_assistant:
+        try:
+            import assistant_page
+            assistant_page.render(ai_cfg)
+        except Exception as exc:  # noqa: BLE001  (le module ASSISTANT ne doit jamais bloquer IMPORT / EXPORT)
+            st.error(f"Module ASSISTANT indisponible ({type(exc).__name__}: {exc}).")
+        ui.footer(ai_active=bool(ai_cfg))
         return
 
     ai_label = f"Lecture IA · {next(k for k, v in ai_engine.MODELS.items() if v == ai_cfg.model).split(' — ')[0]}" \
