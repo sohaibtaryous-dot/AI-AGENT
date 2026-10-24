@@ -459,6 +459,24 @@ def parse_export_documents(docs, client_mode: str, notes: list, ai_map: dict | N
     for d in docs:
         text = d.text
         dec = d.decimal
+        foc = getattr(d, "_foc", "")
+        if foc:                                                       # Customs Invoice/FOC et son Delivery Note (lecture dédiée)
+            import export_foc
+            if foc == "DN":
+                r = export_foc.parse_dn(text, core.parse_number)
+                bl = ExpBL(doc=d, number=r["number"], net=r["net"], gross=r["gross"], packages=r["packages"])
+                bl.lines = r["lines"]
+                bls.append(bl)
+                continue
+            r = export_foc.parse_invoice(text, core.parse_number)
+            supplier = "ALSTOM RAILWAY MAROC S.A." if re.search(r"ALSTOM\s+RAILWAYS?\s+MAROC", text, re.I) else ""
+            inv = ExpInvoice(doc=d, number=r["number"], supplier=supplier, currency=r["currency"], date=r["date"], bl_refs=r["bl_refs"])
+            inv.name = r["client"] if client_mode == "client" else (supplier or r["client"])
+            inv.lines = r["lines"]
+            lines_sum = round(sum(l["amount"] for l in inv.lines if l["amount"] is not None), 2) if inv.lines else None
+            inv.total_ht, inv.total_src = (r["total"], "Total Value") if r["total"] is not None else (lines_sum, "Somme des lignes")
+            invoices.append(inv)
+            continue
         if id(d) in ai_map and d.kind == "FACTURE":
             invoices.append(exp_invoice_from_ai(ai_map[id(d)], d, client_mode, notes))
         elif id(d) in ai_map and d.kind == "PACKING":
@@ -860,6 +878,11 @@ def run_export_pipeline(pdf_files, ocr, client_mode: str, progress, ai_cfg=None)
     log, notes, issues = [], [], []
     progress.progress(0.02, text="Étape 1/3 : Lecture des fichiers...")
     docs, ai_map, audit = core.analyse_documents(pdf_files, ocr, ai_cfg, log, progress, 0.02, 0.62, issues)
+    try:                                                  # pages « FOC » (Customs Invoice/FOC, Delivery Note FCAB…) : documents à part
+        import export_foc
+        docs = export_foc.split_documents(docs, core.Document)
+    except Exception as exc:  # noqa: BLE001
+        log.append(f"⚠ Découpage des pages FOC indisponible ({type(exc).__name__}: {exc}).")
     notes.extend(f"Fichier {i['Fichier']} : {i['Problème']}" for i in issues)
     progress.progress(0.65, text="Étape 2/3 : Extraction des lignes et rapprochement BL ↔ factures...")
     invoices, bls = parse_export_documents(docs, client_mode, notes, ai_map)
@@ -886,8 +909,13 @@ def run_export_pipeline(pdf_files, ocr, client_mode: str, progress, ai_cfg=None)
     src = sum(len(bl.lines) for bl in bls)
     log.append(f"🔁 Lignes d'articles BL : {src} source(s) → {int(bl_df['_group'].isin(range(len(bls))).sum())} ligne(s) Excel")
     progress.progress(0.85, text="Étape 3/3 : Génération des 2 fichiers Excel...")
+    try:                                                  # poids net par unité de manutention de la packing list (ventilation)
+        import pl_weights
+        hu_map = pl_weights.hu_map(docs)
+    except Exception:  # noqa: BLE001
+        hu_map = {}
     return {"factures": fact_df, "blref": bl_df, "docs": docs_df, "log": log, "notes": list(dict.fromkeys(notes)), "consensus": consensus,
-            "audit": audit, "issues": issues}
+            "audit": audit, "issues": issues, "hu_map": hu_map}
 
 
 # =============================================================================
@@ -1404,6 +1432,7 @@ def _render_ventilation_section(bl_final: pd.DataFrame, kind: str = "export"):
                         format_func=lambda n: f"{n} — {ref.destinations[n]}")
     rate = c2.number_input("Taux de change (DH pour 1 devise)", min_value=0.0, value=default_rate, step=0.0001, format="%.4f", key=f"{P}_rate")
     fret = c3.number_input("Fret (devise)", min_value=0.0, value=0.0, step=1.0, key=f"{P}_fret")
+    fixbox = st.container() if not imp else None                    # case « poids connu d'un article » (EXPORT), remplie une fois les articles construits
     fret_note = ""
     if imp:                                                          # le fret peut être saisi en dirhams ou dans la devise du dossier
         _cur = sorted({str(c) for c in (bl_final["_devise"] if "_devise" in bl_final else []) if str(c) not in ("", "nan", "None")})
@@ -1486,6 +1515,23 @@ def _render_ventilation_section(bl_final: pd.DataFrame, kind: str = "export"):
         else:
             manual = {"articles": chosen, "assign_ref": {vx.norm_ref(k): assigned.get(k, 1) for k in keys}}
         vent = build_vent(bl_final, ref, manual=manual)
+    fix_sig = None
+    if fixbox is not None and vent.articles:
+        with fixbox:
+            opts: dict = {}                                           # une entrée par LIGNE (les références répétées ne sont pas fusionnées)
+            for ai, art in enumerate(vent.articles):
+                for li, l in enumerate(art.lines):
+                    opts[(ai, li)] = (f"L{len(opts) + 1} · {str(l['ref']).strip()} — {(l.get('desc') or '')[:30]} · qté {l['qty']:g} · "
+                                      f"facture {l.get('inv', '')} · article {ai + 1}")      # n° de ligne : libellés toujours distincts
+            fa, fb = st.columns([2, 1])
+            picks = fa.multiselect("Références dont je connais le poids", list(opts), format_func=lambda k: opts[k], key=f"{P}_fixrefs",
+                                   placeholder="Choisir les références…",
+                                   help="Quand la packing list ne donne que le total de plusieurs pièces : choisissez les références dont vous connaissez le poids. "
+                                        "Chacune reçoit le poids saisi (par référence) ; le reste du poids net du dossier est réparti sur les autres références.")
+            unit = fb.number_input("Poids par référence (kg)", min_value=0.0, value=0.0, step=0.5, format="%.3f", key=f"{P}_fixw")
+        if unit > 0 and picks:
+            vent.notes = vent.notes + vx.apply_ref_net(vent, set(picks), unit)
+            fix_sig = (tuple(sorted(picks)), round(unit, 4))
     cost = vi.costs(vent, rate, fret, acc) if imp else None
     st.dataframe(vent.summary_df(rate, cost["coef"] if cost else 1.0), use_container_width=True, hide_index=True,
                  column_config={"Poids net (kg)": st.column_config.NumberColumn(format="%.3f"),
@@ -1503,8 +1549,14 @@ def _render_ventilation_section(bl_final: pd.DataFrame, kind: str = "export"):
     if vent.missing:
         with st.expander(f"Références à vérifier ({len(vent.missing)})"):
             st.dataframe(pd.DataFrame(vent.missing), use_container_width=True, hide_index=True)
+    if not imp:                                                       # vérification de la déclaration BADR (EXPORT)
+        try:
+            import dum_check
+            dum_check.render(vent, rate, fret, bl_final, (st.session_state.get("exp_result") or {}).get("factures"))
+        except Exception as exc:  # noqa: BLE001
+            st.warning(f"Vérification de la déclaration indisponible ({type(exc).__name__}: {exc}).")
     sig = (dest, round(rate, 4), round(fret, 2), round(acc, 2), guess, (split, round(ratio, 4)) if imp else None, len(bl_final), round(t["valeur"], 2), round(t["net"], 3),
-           repr(manual) if manual else "auto", matricule)
+           repr(manual) if manual else "auto", matricule, fix_sig)
     suffix = "IMPORT" if imp else "DUM"
     if st.button(f"Générer VENTILATION_{suffix}.xlsx + ANNEXE_{suffix}.xlsx", type="primary", icon=":material/calculate:", key=f"{P}_go", disabled=not dest):
         with st.spinner("Remplissage du modèle et de l'annexe (≈ 1 min)…"):
@@ -1701,7 +1753,8 @@ def render_export(ocr, ai_cfg=None, ai_label: str = ""):
                                                "RECAP_DOUANE.xlsx": recap_bytes, "COMPTE_RENDU.txt": report.encode("utf-8")}),
                                file_name="EXPORT_BL_FACTURES.zip", mime="application/zip", use_container_width=True)
 
-        _render_ventilation_section(bl_final)
+        import pl_weights
+        _render_ventilation_section(pl_weights.attach(bl_final, res.get("hu_map") or {}))
 
         if (st.session_state.get("auth_user") or {}).get("role") == "admin":
             import views  # attribution du dossier à des utilisateurs (Admin uniquement)
